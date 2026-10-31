@@ -1,0 +1,1482 @@
+openapi: 3.0.3
+info:
+  title: EduMarket API
+  version: 1.0.0
+  description: Current implemented API surface. Mongo-backed workflows require a configured database. Amounts in payment DTOs are integer minor units (cents). Errors use the stable { success false, error { code } } envelope.
+servers:
+  - url: http://localhost:4000/api/v1
+security: []
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: edumarket_access
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    ObjectId: { type: string, pattern: '^[a-fA-F0-9]{24}$' }
+    Error:
+      type: object
+      required: [success, error]
+      properties:
+        success: { type: boolean, enum: [false] }
+        error:
+          type: object
+          required: [code]
+          properties:
+            code: { type: string }
+    EnrollmentInput:
+      type: object
+      required: [courseId]
+      properties:
+        courseId: { type: string, pattern: '^[a-fA-F0-9]{24}$' }
+    QuizAnswer:
+      type: object
+      required: [questionId, selectedOptionIndex]
+      properties:
+        questionId: { type: string }
+        selectedOptionIndex: { type: integer, minimum: 0 }
+    QuizAttemptInput:
+      type: object
+      required: [answers]
+      properties:
+        answers:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: '#/components/schemas/QuizAnswer' }
+paths:
+  /health:
+    get:
+      summary: API health
+      responses:
+        '200': { description: API is available }
+  /auth/register:
+    post:
+      summary: Register a student account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 100 }
+                email: { type: string, format: email }
+                password: { type: string, minLength: 10 }
+      responses:
+        '201': { description: Student account created }
+        '400': { description: Invalid input }
+        '409': { description: Email already registered }
+        '502': { description: Email delivery failed }
+        '503': { description: Email provider is not configured }
+  /auth/login:
+    post:
+      summary: Authenticate with email and password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200': { description: User DTO and HttpOnly session cookie }
+        '401': { description: Invalid credentials }
+        '403': { description: Email address is not verified }
+  /auth/email/verification/resend:
+    post:
+      summary: Request an email verification link
+      description: Returns a generic accepted response. Development mode may include a previewUrl; production uses the configured email provider.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        '200': { description: Request accepted }
+        '400': { description: Invalid input }
+        '502': { description: Email delivery failed }
+        '503': { description: Email provider is not configured }
+  /auth/email/verification/confirm:
+    post:
+      summary: Confirm an email address with a one-time token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string, minLength: 32, maxLength: 128 }
+      responses:
+        '200': { description: Email verified }
+        '400': { description: Invalid, expired, or already used token }
+  /auth/password/forgot:
+    post:
+      summary: Request a password reset link
+      description: Returns the same accepted response whether or not the account exists. Development mode may include a previewUrl.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        '200': { description: Request accepted }
+        '400': { description: Invalid input }
+        '502': { description: Email delivery failed }
+        '503': { description: Email provider is not configured }
+  /auth/password/reset:
+    post:
+      summary: Reset a password with a one-time token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, newPassword]
+              properties:
+                token: { type: string, minLength: 32, maxLength: 128 }
+                newPassword: { type: string, minLength: 10, maxLength: 128 }
+      responses:
+        '200': { description: Password reset and previous sessions revoked }
+        '400': { description: Invalid, expired, or already used token }
+  /auth/me/password:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Change password for the current account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string, minLength: 10, maxLength: 128 }
+                newPassword: { type: string, minLength: 10, maxLength: 128 }
+      responses:
+        '200': { description: Password changed and cookie renewed }
+        '401': { description: Authentication or current password invalid }
+  /auth/me:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Read current account
+      responses:
+        '200': { description: Current user DTO }
+        '401': { description: Authentication required }
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Update current account profile
+      responses:
+        '200': { description: Updated user DTO }
+        '400': { description: Invalid input }
+        '401': { description: Authentication required }
+  /auth/logout:
+    post:
+      summary: Clear browser session cookie
+      responses:
+        '204': { description: Session cookie cleared }
+  /courses:
+    get:
+      summary: List published courses with search and filters
+      parameters:
+        - { in: query, name: page, schema: { type: integer, minimum: 1 } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 50 } }
+        - { in: query, name: search, schema: { type: string, maxLength: 100 } }
+        - { in: query, name: category, schema: { type: string } }
+        - { in: query, name: level, schema: { type: string, enum: [beginner, intermediate, advanced] } }
+        - { in: query, name: price, schema: { type: string, enum: [all, free, paid] } }
+        - { in: query, name: sort, schema: { type: string, enum: [popular, rating, newest, price_asc, price_desc] } }
+      responses:
+        '200': { description: Public course outlines and pagination }
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Create a course draft
+      responses:
+        '201': { description: Created course }
+        '401': { description: Authentication required }
+        '403': { description: Role or verification requirement not met }
+  /courses/categories:
+    get:
+      summary: List categories used by published courses
+      responses:
+        '200': { description: Category IDs, names, and course counts }
+  /courses/mine:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: List courses owned by the current teacher/institution
+      responses:
+        '200': { description: Owned courses }
+        '401': { description: Authentication required }
+        '403': { description: Role not allowed }
+  /courses/mine/{id}:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Read an editable owned course
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Editable course }
+        '404': { description: Course not found or not owned }
+  /courses/{id}:
+    get:
+      summary: Read published course outline; full lesson material requires enrollment
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Public course outline or enrolled student course content }
+        '404': { description: Course not found }
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Update an owned course; publish requires admin review
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Updated course }
+        '403': { description: Ownership or publication rule failed }
+  /courses/{courseId}/lessons/{lessonId}/assets/video:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Upload or replace a private lesson video
+      parameters:
+        - { in: path, name: courseId, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+        - { in: path, name: lessonId, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary, description: MP4 or WebM, maximum: 262144000 }
+      responses:
+        '201': { description: Video asset metadata }
+        '401': { description: Authentication required }
+        '403': { description: Verified course staff required }
+        '413': { description: Upload exceeds the size limit }
+  /courses/{courseId}/lessons/{lessonId}/assets/resources:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Upload a private lesson resource
+      parameters:
+        - { in: path, name: courseId, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+        - { in: path, name: lessonId, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary, description: PDF or ZIP, maximum: 26214400 }
+      responses:
+        '201': { description: Resource asset metadata }
+        '401': { description: Authentication required }
+        '403': { description: Verified course staff required }
+        '413': { description: Upload exceeds the size limit }
+  /courses/{courseId}/assets/{assetId}:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Stream a video or download a lesson resource
+      parameters:
+        - { in: path, name: courseId, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+        - { in: path, name: assetId, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+      responses:
+        '200': { description: Authorized private course file }
+        '206': { description: Partial video response for range requests }
+        '401': { description: Authentication required }
+        '404': { description: Asset not found or not accessible to this account }
+  /sessions/availability:
+    get:
+      summary: List future available tutoring slots
+      parameters:
+        - { in: query, name: teacherId, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+        - { in: query, name: from, schema: { type: string, format: date-time } }
+        - { in: query, name: to, schema: { type: string, format: date-time } }
+      responses:
+        '200': { description: Public available slots }
+        '400': { description: Invalid date or teacher filter }
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Publish a verified teacher's availability
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [startAt, endAt, type, price]
+              properties:
+                startAt: { type: string, format: date-time }
+                endAt: { type: string, format: date-time }
+                type: { type: string, enum: [online, in_person] }
+                price: { type: number, minimum: 0, maximum: 100000 }
+                venue: { type: string, maxLength: 200 }
+      responses:
+        '201': { description: Availability slot created }
+        '403': { description: Verified teacher required }
+        '409': { description: Availability overlaps another slot or the teacher schedule lock is busy (`SESSION_TIME_CONFLICT` or `SESSION_SCHEDULE_BUSY`) }
+  /sessions:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: List sessions belonging to the current student or teacher
+      responses:
+        '200': { description: Participant-scoped sessions; meetingUrl is present only for configured, confirmed online meetings }
+        '401': { description: Authentication required }
+  /sessions/{sessionId}/book:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Book an available slot at its server-set price
+      parameters:
+        - { in: path, name: sessionId, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subject]
+              properties:
+                subject: { type: string, minLength: 1, maxLength: 160 }
+                notes: { type: string, maxLength: 2000 }
+      responses:
+        '201': { description: Booking request created }
+        '409': { description: Slot is no longer available }
+  /sessions/{sessionId}/status:
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Accept, reject, cancel or complete a tutoring session
+      parameters:
+        - { in: path, name: sessionId, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [confirmed, rejected, cancelled, completed] }
+      responses:
+        '200': { description: Updated session; a configured Jitsi base enables participant-scoped meetingUrl on confirmed online sessions }
+        '403': { description: Role or ownership requirement not met }
+  /sessions/{sessionId}/review:
+    put:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Create or update a review for the student's completed session
+      parameters:
+        - { in: path, name: sessionId, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rating, comment]
+              properties:
+                rating: { type: integer, minimum: 1, maximum: 5 }
+                comment: { type: string, minLength: 10, maxLength: 2000 }
+      responses:
+        '200': { description: Saved session review }
+        '403': { description: Only the student on a completed session may review }
+  /enrollments:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: List current student's enrollments
+      responses:
+        '200': { description: Enrollments with sanitized course DTOs }
+        '401': { description: Authentication required }
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Enroll current student in a published free course
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EnrollmentInput' }
+      responses:
+        '201': { description: Enrollment created or returned idempotently }
+        '402': { description: The course is paid; paid enrollment is not available until a payment provider is configured }
+        '401': { description: Authentication required }
+  /enrollments/{courseId}:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Read current student's enrollment progress
+      parameters:
+        - { in: path, name: courseId, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Enrollment progress }
+        '404': { description: Enrollment not found }
+  /enrollments/{courseId}/lessons/{lessonId}/complete:
+    put:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Mark an enrolled lesson complete
+      parameters:
+        - { in: path, name: courseId, required: true, schema: { type: string } }
+        - { in: path, name: lessonId, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Persisted progress }
+        '403': { description: Enrollment missing or required quiz not passed }
+  /enrollments/{courseId}/lessons/{lessonId}/quiz-attempts:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Submit and receive server-graded quiz attempt
+      parameters:
+        - { in: path, name: courseId, required: true, schema: { type: string } }
+        - { in: path, name: lessonId, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [answers]
+              properties:
+                answers: { type: array, items: { $ref: '#/components/schemas/QuizAnswer' } }
+      responses:
+        '201': { description: Server-scored attempt and review details }
+        '403': { description: Enrollment required }
+        '429': { description: Attempt rate limit exceeded }
+  /messaging/contacts:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Resolve one eligible student/teacher contact by email
+      parameters:
+        - { in: query, name: email, required: true, schema: { type: string, format: email, maxLength: 254 } }
+      responses:
+        '200': { description: Eligible contact identity }
+        '404': { description: Contact not found or not eligible for messaging }
+  /messaging/conversations:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: List conversations for the authenticated student or teacher
+      responses:
+        '200': { description: Caller-scoped conversations and unread counts }
+        '401': { description: Authentication required }
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Create or return a conversation with an eligible student/teacher contact
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email, maxLength: 254 }
+      responses:
+        '201': { description: Private one-to-one conversation }
+        '404': { description: Contact not found or not eligible }
+  /messaging/events:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Open a participant-scoped messaging Server-Sent Events stream
+      responses:
+        '200': { description: text/event-stream emitting `message.created` only to conversation participants }
+        '401': { description: Authentication required }
+        '403': { description: Student or teacher role required }
+  /notifications/events:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Open an authenticated notification Server-Sent Events stream
+      responses:
+        '200': { description: text/event-stream emitting `notification.created` only to the owner }
+        '401': { description: Authentication required }
+  /notifications:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: List the current user's recent notifications
+      responses:
+        '200': { description: Up to 100 newest notifications belonging to the caller }
+        '401': { description: Authentication required }
+  /notifications/read-all:
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Mark all current user's notifications as read
+      responses:
+        '200': { description: Read state updated }
+        '401': { description: Authentication required }
+  /notifications/{notificationId}/read:
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Mark one owned notification as read
+      parameters:
+        - { in: path, name: notificationId, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+      responses:
+        '200': { description: Notification marked read }
+        '401': { description: Authentication required }
+        '404': { description: Notification not found or not owned by caller }
+  /messaging/conversations/{conversationId}/messages:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: List recent conversation messages and attachment metadata
+      parameters:
+        - { in: path, name: conversationId, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+      responses:
+        '200': { description: Up to 100 messages in chronological order }
+        '404': { description: Conversation not found or caller is not a participant }
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Send text and/or one private document to a conversation participant
+      parameters:
+        - { in: path, name: conversationId, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, minLength: 1, maxLength: 5000 }
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                text: { type: string, maxLength: 5000 }
+                file: { type: string, format: binary, description: PDF, ZIP, or DOCX up to 10 MiB }
+      responses:
+        '201': { description: Message created; attachment bytes remain private }
+        '400': { description: Message must contain text or a file }
+        '404': { description: Conversation not found or caller is not a participant }
+        '413': { description: Attachment exceeds 10 MiB }
+        '415': { description: Unsupported file type or invalid file signature }
+  /messaging/attachments/{attachmentId}:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Download a message attachment as one of its conversation participants
+      parameters:
+        - { in: path, name: attachmentId, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+      responses:
+        '200': { description: Private attachment download }
+        '401': { description: Authentication required }
+        '404': { description: Attachment not found or caller is not a participant }
+  /messaging/conversations/{conversationId}/voice-notes:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Send a private voice note to a conversation participant
+      parameters:
+        - { in: path, name: conversationId, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [voice, durationSeconds]
+              properties:
+                voice: { type: string, format: binary, description: WebM, Ogg, or MP4 audio up to 5 MiB }
+                durationSeconds: { type: integer, minimum: 1, maximum: 60 }
+      responses:
+        '201': { description: Voice note message created; audio remains private }
+        '400': { description: Voice file and duration are required }
+        '401': { description: Authentication required }
+        '404': { description: Conversation not found or caller is not a participant }
+        '413': { description: Voice note exceeds 5 MiB }
+        '415': { description: Unsupported audio type or invalid audio signature }
+  /messaging/voice-notes/{voiceNoteId}:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Stream a private voice note as one of its conversation participants
+      parameters:
+        - { in: path, name: voiceNoteId, required: true, schema: { type: string, pattern: '^[a-fA-F0-9]{24}$' } }
+      responses:
+        '200': { description: Private audio stream }
+        '401': { description: Authentication required }
+        '404': { description: Voice note not found or caller is not a participant }
+  /messaging/conversations/{conversationId}/read:
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Mark incoming conversation messages as read
+      parameters:
+        - { in: path, name: conversationId, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Read state updated }
+        '404': { description: Conversation not found or caller is not a participant }
+  /teacher-verifications/mine:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Read the current user's teacher application
+      responses:
+        '200': { description: Application DTO or null }
+        '401': { description: Authentication required }
+  /assignments:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: List assignments for enrolled courses
+      responses:
+        '200': { description: Student assignments with own submission state }
+        '403': { description: Student role required }
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Create an assignment for an owned published course
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [courseId, title, instructions, dueAt]
+              properties:
+                courseId: { type: string, pattern: '^[a-fA-F0-9]{24}$' }
+                title: { type: string, minLength: 3, maxLength: 180 }
+                instructions: { type: string, minLength: 5, maxLength: 12000 }
+                dueAt: { type: string, format: date-time }
+                points: { type: integer, minimum: 1, maximum: 1000 }
+                status: { type: string, enum: [draft, published] }
+      responses:
+        '201': { description: Assignment created }
+        '403': { description: Verified teacher role required }
+  /assignments/teacher:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: List own assignments and student submissions
+      responses:
+        '200': { description: Teacher assignments and private submission metadata }
+        '403': { description: Verified teacher role required }
+  /assignments/{assignmentId}/submissions:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Submit text and/or private assignment files
+      parameters:
+        - { in: path, name: assignmentId, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                answerText: { type: string, maxLength: 12000 }
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                answerText: { type: string, maxLength: 12000 }
+                files:
+                  type: array
+                  maxItems: 3
+                  items: { type: string, format: binary, description: PDF, ZIP, or DOCX up to 10 MiB each }
+      responses:
+        '201': { description: Assignment submission created }
+        '200': { description: Submission updated before grading }
+        '403': { description: Enrollment required }
+        '409': { description: Assignment closed or submission already graded }
+        '413': { description: File exceeds 10 MiB }
+        '415': { description: Unsupported or invalid file content }
+  /assignments/submission-files/{fileId}:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Download a private submission as its student or owning verified teacher
+      parameters:
+        - { in: path, name: fileId, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Private file attachment }
+        '401': { description: Authentication required }
+        '404': { description: File not found or caller lacks access }
+  /assignments/{assignmentId}/submissions/{submissionId}/grade:
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Grade a submission for a teacher-owned assignment
+      parameters:
+        - { in: path, name: assignmentId, required: true, schema: { type: string } }
+        - { in: path, name: submissionId, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [score]
+              properties:
+                score: { type: number, minimum: 0 }
+                feedback: { type: string, maxLength: 4000 }
+      responses:
+        '200': { description: Submission graded }
+        '403': { description: Verified teacher role required }
+        '404': { description: Assignment or submission unavailable }
+  /teacher-verifications:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Submit a teacher verification application
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [specialty, credentialsSummary]
+              properties:
+                specialty: { type: string, minLength: 3, maxLength: 160 }
+                registrationNumber: { type: string, maxLength: 80 }
+                credentialsSummary: { type: string, minLength: 30, maxLength: 2000 }
+      responses:
+        '201': { description: Application submitted; account role becomes unverified_teacher }
+        '401': { description: Authentication required }
+        '409': { description: Application already pending }
+        '429': { description: Submission rate limit exceeded }
+  /teacher-verifications/admin:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: List teacher applications for review
+      responses:
+        '200': { description: Admin verification queue }
+        '403': { description: Admin role required }
+  /teacher-verifications/documents:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Upload private evidence to a teacher application
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary, description: PDF, PNG, or JPEG; maximum 5 MiB }
+      responses:
+        '201': { description: Private document metadata }
+        '401': { description: Authentication required }
+        '409': { description: Application missing, approved, or document limit reached }
+        '413': { description: File exceeds 5 MiB }
+        '415': { description: Unsupported or invalid file content }
+  /teacher-verifications/documents/{documentId}:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Download own evidence or an applicant's evidence as admin
+      parameters:
+        - { in: path, name: documentId, required: true, schema: { type: string } }
+      responses:
+        '200': { description: Private document attachment }
+        '401': { description: Authentication required }
+        '404': { description: Document missing or caller lacks access }
+  /teacher-verifications/admin/{userId}:
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Approve or reject a pending teacher application
+      parameters:
+        - { in: path, name: userId, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [approved, rejected] }
+                reviewNote: { type: string, maxLength: 1000 }
+      responses:
+        '200': { description: Application reviewed; live role and verified flag updated }
+        '403': { description: Admin role required }
+        '404': { description: Pending application not found }
+  /admin/users:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: List user accounts for administration
+      parameters:
+        - { in: query, name: search, schema: { type: string, maxLength: 100 } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100 } }
+      responses:
+        '200': { description: User DTOs without credentials or password hashes }
+        '403': { description: Admin role required }
+  /admin/settings:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Read persisted platform settings
+      responses:
+        '200': { description: Commission rate and maintenance flag }
+        '403': { description: Admin role required }
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Update commission rate and maintenance mode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              additionalProperties: false
+              properties:
+                commissionRate: { type: number, minimum: 0, maximum: 50 }
+                maintenanceMode: { type: boolean }
+      responses:
+        '200': { description: Persisted settings }
+        '400': { description: Invalid settings }
+        '403': { description: Admin role required }
+  /platform/status:
+    get:
+      summary: Read public maintenance status
+      responses:
+        '200': { description: Maintenance flag only }
+  /admin/users/{userId}/role:
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Change an account role
+      parameters:
+        - { in: path, name: userId, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, enum: [student, teacher, unverified_teacher, institution, moderator, admin] }
+      responses:
+        '200': { description: Updated user DTO }
+        '403': { description: Admin role required or teacher not verified }
+        '409': { description: Self-demotion or pending verification conflict }
+  /admin/users/{userId}/status:
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Activate or suspend an account
+      parameters:
+        - { in: path, name: userId, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [active, suspended] }
+      responses:
+        '200': { description: Updated user DTO }
+        '403': { description: Admin role required }
+        '409': { description: Cannot suspend own account }
+  /payments/config:
+    get:
+      summary: Public payment availability (provider name, sandbox flag, currency); never exposes secrets
+      responses:
+        '200': { description: '{ enabled, provider: sandbox|stripe|null, sandbox, currency, commissionRate }' }
+  /payments/checkout:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Create a provider checkout for paid courses. Prices are read from MongoDB; only identifiers are accepted.
+      parameters:
+        - { in: header, name: Idempotency-Key, required: false, schema: { type: string, pattern: '^[\w-]{8,100}$' }, description: Reuses the same pending order for retried submissions }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [courseIds]
+              additionalProperties: false
+              properties:
+                courseIds: { type: array, minItems: 1, maxItems: 20, items: { $ref: '#/components/schemas/ObjectId' } }
+                paymentMethod: { type: string, enum: [card, paypal, transfer], description: Ignored; the provider page selects the method }
+      responses:
+        '201': { description: '{ orderId, status: pending, provider, checkoutUrl, totalAmount (minor units), currency, expiresAt }' }
+        '404': { description: COURSE_NOT_FOUND (unknown or unpublished course) }
+        '409': { description: ALREADY_ENROLLED or IDEMPOTENCY_KEY_REUSED }
+        '422': { description: FREE_COURSE_NOT_PURCHASABLE }
+        '503': { description: PAYMENT_PROVIDER_NOT_CONFIGURED; no order or enrollment is created }
+        '401': { description: Authentication required }
+        '403': { description: Student role required }
+  /payments/checkout/exams/{examId}:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Checkout for a paid exam registration (registration is created after payment confirmation)
+      parameters: [{ in: path, name: examId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses:
+        '201': { description: Checkout session }
+        '409': { description: EXAM_CLOSED, EXAM_FULL or ALREADY_REGISTERED }
+        '422': { description: FREE_EXAM_NOT_PURCHASABLE }
+  /payments/checkout/sessions/{sessionId}:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Reserve a paid tutoring slot for 40 minutes and open a provider checkout
+      parameters: [{ in: path, name: sessionId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [subject], additionalProperties: false, properties: { subject: { type: string, maxLength: 160 }, notes: { type: string, maxLength: 2000 } } }
+      responses:
+        '201': { description: Checkout session; the slot is held with paymentStatus=awaiting_payment }
+        '409': { description: SESSION_UNAVAILABLE }
+  /payments/orders/mine:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Buyer order history (no seller split exposed)
+      responses: { '200': { description: Order DTO list } }
+  /payments/orders/{orderId}:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Order detail for its buyer or an administrator; other users receive 404
+      parameters: [{ in: path, name: orderId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '200': { description: Order DTO }, '404': { description: ORDER_NOT_FOUND } }
+  /payments/orders/{orderId}/invoice:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Invoice data for a paid or refunded order (sequential INV-YYYY-NNNNNN number)
+      parameters: [{ in: path, name: orderId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '200': { description: Invoice DTO }, '409': { description: INVOICE_NOT_AVAILABLE } }
+  /payments/sandbox/sessions/{sessionId}/{outcome}:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Development-only sandbox confirmation (PAYMENT_PROVIDER=sandbox, never in production); uses the webhook handler path
+      parameters:
+        - { in: path, name: sessionId, required: true, schema: { type: string } }
+        - { in: path, name: outcome, required: true, schema: { type: string, enum: [complete, fail] } }
+      responses: { '200': { description: Updated order }, '404': { description: Not the buyer, unknown session or provider not sandbox }, '409': { description: ORDER_NOT_PENDING } }
+  /payments/webhooks/{provider}:
+    post:
+      summary: Provider webhook (raw body). Stripe-Signature or X-Sandbox-Signature (t=,v1= HMAC-SHA256) is verified with a 5-minute tolerance; events are deduplicated.
+      parameters: [{ in: path, name: provider, required: true, schema: { type: string, enum: [stripe, sandbox] } }]
+      responses:
+        '200': { description: '{ received: true, duplicate }' }
+        '400': { description: INVALID_WEBHOOK_SIGNATURE or INVALID_WEBHOOK_PAYLOAD }
+        '503': { description: PAYMENT_PROVIDER_NOT_CONFIGURED }
+  /payments/earnings:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Seller balance (earned, pending hold, refunded, fees, available) and latest ledger entries — teacher or institution
+      responses: { '200': { description: '{ balance, entries }' }, '403': { description: Seller role required } }
+  /payments/payouts/mine:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Seller payout requests
+      responses: { '200': { description: Payout list } }
+  /payments/payouts:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Request a payout of the whole available balance (one open request per seller)
+      responses: { '201': { description: Payout }, '409': { description: PAYOUT_ALREADY_REQUESTED }, '422': { description: PAYOUT_BELOW_MINIMUM } }
+  /admin/payments/summary:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Admin revenue, commissions, refunds and payout totals
+      responses: { '200': { description: Summary }, '403': { description: Admin only } }
+  /admin/payments/orders:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Paginated orders with seller split (admin)
+      parameters:
+        - { in: query, name: status, schema: { type: string, enum: [all, pending, paid, failed, refunded] } }
+        - { in: query, name: page, schema: { type: integer, minimum: 1 } }
+      responses: { '200': { description: '{ data, pagination }' } }
+  /admin/payments/orders/{orderId}/refund:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Full refund through the provider; revokes access and debits the seller ledger
+      parameters: [{ in: path, name: orderId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [reason], properties: { reason: { type: string, minLength: 3, maxLength: 1000 } } } } } }
+      responses: { '200': { description: Refunded order }, '409': { description: ORDER_NOT_REFUNDABLE } }
+  /admin/payments/payouts:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Payout queue
+      parameters: [{ in: query, name: status, schema: { type: string, enum: [all, requested, paid, rejected] } }]
+      responses: { '200': { description: Payout list } }
+  /admin/payments/payouts/{payoutId}:
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Mark a manual bank transfer as paid (reference required) or reject it
+      parameters: [{ in: path, name: payoutId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [status], properties: { status: { type: string, enum: [paid, rejected] }, reference: { type: string }, note: { type: string } } } } } }
+      responses: { '200': { description: Payout }, '409': { description: PAYOUT_ALREADY_PROCESSED }, '422': { description: PAYOUT_REFERENCE_REQUIRED } }
+  /courses/{courseId}/submit-review:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Owner (verified teacher or institution) submits a draft/rejected course with at least one lesson for moderation
+      parameters: [{ in: path, name: courseId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '200': { description: Course with status pending_review }, '409': { description: COURSE_STATUS_CONFLICT }, '422': { description: COURSE_CONTENT_REQUIRED } }
+  /moderation/summary:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Moderation counters (moderator or admin)
+      responses: { '200': { description: '{ pendingCourses, suspendedCourses, openForumReports, hiddenReviews }' } }
+  /moderation/courses:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Course moderation queue (moderator or admin)
+      parameters:
+        - { in: query, name: status, schema: { type: string, enum: [all, draft, pending_review, published, rejected, suspended] } }
+        - { in: query, name: search, schema: { type: string } }
+        - { in: query, name: page, schema: { type: integer } }
+      responses: { '200': { description: '{ data, pagination }' } }
+  /moderation/courses/{courseId}/review:
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Approve (publish) or reject a pending course; rejection requires a note; owner is notified and the decision audited
+      parameters: [{ in: path, name: courseId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [decision], properties: { decision: { type: string, enum: [approve, reject] }, note: { type: string } } } } } }
+      responses: { '200': { description: Course }, '409': { description: COURSE_STATUS_CONFLICT }, '422': { description: REVIEW_NOTE_REQUIRED } }
+  /moderation/courses/{courseId}/suspension:
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Suspend a published course (note required) or restore a suspended course
+      parameters: [{ in: path, name: courseId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [suspended], properties: { suspended: { type: boolean }, note: { type: string } } } } } }
+      responses: { '200': { description: Course } }
+  /moderation/history:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Audited moderation decisions (moderation.* actions)
+      responses: { '200': { description: '{ data, pagination }' } }
+  /admin/audit-logs:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Paginated audit log (admin) with action prefix, severity and target filters
+      parameters:
+        - { in: query, name: action, schema: { type: string } }
+        - { in: query, name: severity, schema: { type: string, enum: [info, warning, critical] } }
+        - { in: query, name: targetType, schema: { type: string } }
+        - { in: query, name: page, schema: { type: integer } }
+      responses: { '200': { description: '{ data, pagination }' } }
+  /admin/categories:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Managed categories with course counts (admin)
+      responses: { '200': { description: Category list } }
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Create a category with FR/EN/AR names
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [slug, names], properties: { slug: { type: string }, names: { type: object, required: [fr, en, ar] }, active: { type: boolean }, order: { type: integer } } } } } }
+      responses: { '201': { description: Category }, '409': { description: RESOURCE_ALREADY_EXISTS } }
+  /admin/categories/{categoryId}:
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Update names, activation or order
+      parameters: [{ in: path, name: categoryId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '200': { description: Category } }
+    delete:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Delete an unused category (categories in use must be deactivated)
+      parameters: [{ in: path, name: categoryId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '204': { description: Deleted }, '409': { description: CATEGORY_IN_USE } }
+  /support/tickets:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Requester's own tickets (any signed-in role)
+      responses: { '200': { description: Ticket list } }
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Open a ticket (rate limited)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [subject, category, message], properties: { subject: { type: string }, category: { type: string, enum: [account, billing, course, technical, other] }, message: { type: string }, relatedOrderId: { $ref: '#/components/schemas/ObjectId' } } } } } }
+      responses: { '201': { description: Ticket } }
+  /support/tickets/{ticketId}/messages:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Requester reply (owner only; 404 for others)
+      parameters: [{ in: path, name: ticketId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '200': { description: Ticket }, '409': { description: TICKET_CLOSED } }
+  /support/tickets/{ticketId}/close:
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Requester closes the ticket
+      parameters: [{ in: path, name: ticketId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '200': { description: Ticket } }
+  /admin/support/tickets:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Staff queue (admin only)
+      parameters: [{ in: query, name: status, schema: { type: string, enum: [all, open, pending_user, resolved, closed] } }]
+      responses: { '200': { description: '{ data, pagination }' } }
+  /admin/support/tickets/{ticketId}/messages:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Staff reply; sets status pending_user or resolved and notifies the requester
+      parameters: [{ in: path, name: ticketId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '200': { description: Ticket } }
+  /admin/support/tickets/{ticketId}:
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Update ticket status or priority
+      parameters: [{ in: path, name: ticketId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '200': { description: Ticket } }
+  /analytics/admin/overview:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Platform counters, queues, revenue and 14-day sign-ups (admin)
+      responses: { '200': { description: Overview } }
+  /analytics/institution:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Cohort analytics and enrolled students for the institution's and affiliated teachers' courses
+      responses: { '200': { description: '{ totals, courses, students }' } }
+  /calendar/events:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Personal sessions and dated exam registrations
+      responses: { '200': { description: Event list } }
+  /calendar/events.ics:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Same events as an iCalendar file
+      responses: { '200': { description: text/calendar } }
+  /calendar/google/status:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Google Calendar configuration and link status (tokens never returned)
+      responses: { '200': { description: '{ configured, connected, connectedAt }' } }
+  /calendar/google/connect:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Returns the Google OAuth consent URL with a signed 10-minute state
+      responses: { '200': { description: '{ authorizationUrl }' }, '503': { description: GOOGLE_CALENDAR_NOT_CONFIGURED } }
+  /calendar/google/callback:
+    get:
+      summary: OAuth redirect target; verifies state, stores the encrypted refresh token and redirects to /calendar?google=connected|error
+      responses: { '303': { description: Redirect to the frontend calendar page } }
+  /calendar/google:
+    delete:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Revoke and remove the Google Calendar link
+      responses: { '204': { description: Disconnected } }
+  /certificates/verify/{code}:
+    get:
+      summary: Public certificate verification (case-insensitive code)
+      parameters: [{ in: path, name: code, required: true, schema: { type: string, maxLength: 64 } }]
+      responses: { '200': { description: '{ code, studentName, courseTitle, instructorName, issueDate }' }, '404': { description: CERTIFICATE_NOT_FOUND } }
+  /platform/stats:
+    get:
+      summary: Public counters for the home page (published courses, learners, verified teachers)
+      responses: { '200': { description: Platform counters } }
+  /support/contact:
+    post:
+      summary: Public contact form; creates a guest support ticket answered by email (rate limited)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [name, email, message], properties: { name: { type: string }, email: { type: string, format: email }, subject: { type: string }, message: { type: string, minLength: 10 } } } } } }
+      responses: { '201': { description: Ticket reference } }
+  /subscriptions/offer:
+    get:
+      summary: Public subscription offer (enabled flag, monthly and yearly prices in cents)
+      responses: { '200': { description: Offer } }
+  /subscriptions/me:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Student's subscription status and periods
+      responses: { '200': { description: Subscription or null }, '403': { description: Students only } }
+  /subscriptions/checkout:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Start a prepaid subscription period checkout (Idempotency-Key supported); price set by the server
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [plan], properties: { plan: { type: string, enum: [monthly, yearly] } } } } } }
+      responses: { '201': { description: '{ orderId, status, provider, checkoutUrl, totalAmount, currency, expiresAt }' }, '409': { description: Subscriptions disabled or payment unavailable } }
+  /subscriptions/me/cancel:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Stop renewal reminders; access stays until the paid period ends
+      responses: { '200': { description: Subscription } }
+  /reports:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Report a course, review, message (participants only) or profile; one open report per reporter and target
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [targetType, targetId, reason], properties: { targetType: { type: string, enum: [course, course_review, message, user] }, targetId: { $ref: '#/components/schemas/ObjectId' }, reason: { type: string }, details: { type: string, maxLength: 1000 } } } } } }
+      responses: { '201': { description: Report }, '404': { description: REPORT_TARGET_NOT_FOUND }, '409': { description: REPORT_ALREADY_OPEN } }
+  /moderation/reports:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Report queue (moderator, admin)
+      parameters: [{ in: query, name: status, schema: { type: string, enum: [open, escalated, actioned, dismissed, all] } }, { in: query, name: targetType, schema: { type: string } }, { in: query, name: page, schema: { type: integer } }]
+      responses: { '200': { description: '{ data, pagination }' } }
+  /moderation/reports/{reportId}:
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Decide a report; actioned suspends the course or hides the review/message; a moderator's decision on a user report escalates it to admins
+      parameters: [{ in: path, name: reportId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [decision], properties: { decision: { type: string, enum: [actioned, dismissed] }, note: { type: string } } } } } }
+      responses: { '200': { description: Report }, '409': { description: REPORT_ALREADY_PROCESSED } }
+  /courses/{courseId}/lessons/{lessonId}/questions:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Lesson questions (actively enrolled students, course owner, staff)
+      parameters: [{ in: path, name: courseId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }, { in: path, name: lessonId, required: true, schema: { type: string } }]
+      responses: { '200': { description: Questions with answers }, '403': { description: ENROLLMENT_REQUIRED } }
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Ask a question
+      parameters: [{ in: path, name: courseId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }, { in: path, name: lessonId, required: true, schema: { type: string } }]
+      responses: { '201': { description: Question } }
+  /courses/{courseId}/lessons/{lessonId}/questions/{questionId}/answers:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Answer a question (answers from the course owner are flagged staff)
+      parameters: [{ in: path, name: courseId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }, { in: path, name: lessonId, required: true, schema: { type: string } }, { in: path, name: questionId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '201': { description: Question } }
+  /learning-paths:
+    get:
+      summary: Active learning paths with their published courses
+      responses: { '200': { description: Paths } }
+  /learning-paths/{slug}:
+    get:
+      summary: One active learning path
+      parameters: [{ in: path, name: slug, required: true, schema: { type: string } }]
+      responses: { '200': { description: Path }, '404': { description: Not found } }
+  /admin/learning-paths:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: All learning paths (admin)
+      responses: { '200': { description: Paths } }
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Create a path from published courses (localized title/description FR/EN/AR)
+      responses: { '201': { description: Path }, '400': { description: PATH_COURSE_NOT_PUBLISHED or DUPLICATE_PATH_COURSE } }
+  /admin/learning-paths/{pathId}:
+    put:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Replace a path
+      parameters: [{ in: path, name: pathId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '200': { description: Path } }
+    delete:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Delete a path
+      parameters: [{ in: path, name: pathId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '200': { description: Deleted } }
+  /institutions/affiliation/mine:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Signed-in teacher's current affiliation (institution, revenue share, internal role) or null
+      responses: { '200': { description: Affiliation or null } }
+    delete:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Teacher leaves their institution
+      responses: { '204': { description: Ended }, '404': { description: AFFILIATION_NOT_FOUND } }
+  /institutions/teachers/{teacherId}:
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Institution updates an affiliated teacher's internal role and/or revenue share (future sales only)
+      parameters: [{ in: path, name: teacherId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { internalRole: { type: string, enum: [teacher, coordinator, examiner] }, revenueSharePercent: { type: integer, minimum: 0, maximum: 50 } } } } } }
+      responses: { '200': { description: Member }, '404': { description: AFFILIATION_NOT_FOUND } }
+    delete:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Institution ends an affiliation (status ended, role reset)
+      parameters: [{ in: path, name: teacherId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '204': { description: Ended } }
+  /courses/{courseId}/co-owners:
+    put:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Replace the course co-owners (verified teachers by e-mail); primary owner, owning institution or admin
+      parameters: [{ in: path, name: courseId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [emails], properties: { emails: { type: array, maxItems: 10, items: { type: string, format: email } } } } } } }
+      responses: { '200': { description: Co-owners }, '403': { description: COURSE_OWNER_REQUIRED }, '404': { description: COURSE_NOT_FOUND or VERIFIED_TEACHER_NOT_FOUND } }
+  /courses/reviews/managed:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Published reviews of the courses the teacher/institution manages
+      responses: { '200': { description: Reviews with replies } }
+  /courses/{courseId}/reviews/{reviewId}/reply:
+    put:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Public reply from a course manager; an empty body removes it
+      parameters: [{ in: path, name: courseId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }, { in: path, name: reviewId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [body], properties: { body: { type: string, maxLength: 2000 } } } } } }
+      responses: { '200': { description: Reply }, '404': { description: REVIEW_NOT_FOUND } }
+  /analytics/teacher:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Learning report for own, co-owned and coordinated courses (same DTO as /analytics/institution)
+      responses: { '200': { description: Report }, '403': { description: Teachers only } }
+  /sessions/{sessionId}/reschedule:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Move a booked session to another open slot of the same teacher with the same type and price
+      parameters: [{ in: path, name: sessionId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [targetSessionId], properties: { targetSessionId: { $ref: '#/components/schemas/ObjectId' } } } } } }
+      responses: { '200': { description: Moved session }, '404': { description: SESSION_NOT_FOUND }, '409': { description: RESCHEDULE_SLOT_UNAVAILABLE, SESSION_PAYMENT_PENDING or SESSION_STATUS_CONFLICT } }
+  /admin/exams:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: All exams (admin)
+      parameters: [{ in: query, name: type, schema: { type: string, enum: [online, in_person] } }, { in: query, name: status, schema: { type: string, enum: [draft, published] } }, { in: query, name: search, schema: { type: string } }, { in: query, name: page, schema: { type: integer } }]
+      responses: { '200': { description: '{ data, pagination }' } }
+  /admin/exams/{examId}:
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Publish or withdraw an exam
+      parameters: [{ in: path, name: examId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [status], properties: { status: { type: string, enum: [draft, published] } } } } } }
+      responses: { '200': { description: Exam status }, '400': { description: PUBLISH_COURSE_FIRST } }
+  /admin/certificates:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Issued certificates (search by code, student name or e-mail)
+      parameters: [{ in: query, name: search, schema: { type: string } }, { in: query, name: status, schema: { type: string, enum: [all, valid, revoked] } }, { in: query, name: page, schema: { type: integer } }]
+      responses: { '200': { description: '{ data, pagination }' } }
+  /admin/certificates/{certificateId}:
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Revoke (reason required) or restore a certificate
+      parameters: [{ in: path, name: certificateId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      requestBody: { required: true, content: { application/json: { schema: { oneOf: [{ type: object, required: [status, reason], properties: { status: { type: string, enum: [revoked] }, reason: { type: string, minLength: 5 } } }, { type: object, required: [status], properties: { status: { type: string, enum: [valid] } } }] } } } }
+      responses: { '200': { description: Certificate }, '409': { description: CERTIFICATE_STATUS_CONFLICT } }
+  /admin/users/{userId}:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: User detail with affiliation, activity counters and recent audit events
+      parameters: [{ in: path, name: userId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '200': { description: User detail }, '404': { description: USER_NOT_FOUND } }
+  /classes:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Classes managed by the signed-in teacher/institution (admin sees all)
+      responses: { '200': { description: Classes } }
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Create a class (verified teacher or institution)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [name], properties: { name: { type: string }, level: { type: string }, academicYear: { type: string }, description: { type: string }, joinEnabled: { type: boolean } } } } } }
+      responses: { '201': { description: Class detail } }
+  /classes/mine:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Student's classes with the courses they open
+      responses: { '200': { description: Classes } }
+  /classes/join:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Join a class with its code (student, rate limited)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [code], properties: { code: { type: string } } } } } }
+      responses: { '200': { description: Joined class }, '404': { description: CLASS_CODE_INVALID } }
+  /classes/{classId}:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Class detail with members' progress per course
+      parameters: [{ in: path, name: classId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '200': { description: Class detail }, '404': { description: CLASS_NOT_FOUND } }
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Update or archive a class (archiving expires class access)
+      parameters: [{ in: path, name: classId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '200': { description: Class detail } }
+    delete:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Delete an empty class
+      parameters: [{ in: path, name: classId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '204': { description: Deleted }, '409': { description: CLASS_NOT_EMPTY } }
+  /classes/{classId}/courses:
+    put:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Replace the courses opened to the class
+      parameters: [{ in: path, name: classId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [courseIds], properties: { courseIds: { type: array, items: { $ref: '#/components/schemas/ObjectId' } } } } } } }
+      responses: { '200': { description: Class detail }, '400': { description: CLASS_COURSE_NOT_ASSIGNABLE } }
+  /classes/{classId}/students:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Add existing student accounts by e-mail
+      parameters: [{ in: path, name: classId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [emails], properties: { emails: { type: array, items: { type: string, format: email } } } } } } }
+      responses: { '200': { description: '{ added, notFound, class }' } }
+  /classes/{classId}/students/{studentId}:
+    delete:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Remove a student (access expires, progress kept)
+      parameters: [{ in: path, name: classId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }, { in: path, name: studentId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '200': { description: Class detail } }
+  /classes/{classId}/join-code:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Generate a new join code
+      parameters: [{ in: path, name: classId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '200': { description: '{ joinCode }' } }
+  /payments/offline-requests:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Student request to pay courses or a subscription by cash, cheque or bank transfer
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { courseIds: { type: array, items: { $ref: '#/components/schemas/ObjectId' } }, plan: { type: string, enum: [monthly, yearly] }, method: { type: string, enum: [cash, cheque, bank_transfer] } } } } } }
+      responses: { '201': { description: '{ order, instructions }' }, '409': { description: OFFLINE_PAYMENTS_DISABLED or TOO_MANY_OFFLINE_REQUESTS } }
+  /payments/orders/{orderId}/cancel:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Buyer cancels a pending offline request
+      parameters: [{ in: path, name: orderId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '200': { description: Order } }
+  /payments/orders/{orderId}/offline-proof:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Proof scan of an offline payment (buyer or admin)
+      parameters: [{ in: path, name: orderId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '200': { description: Image or PDF }, '404': { description: PAYMENT_PROOF_NOT_FOUND } }
+  /admin/payments/orders/{orderId}/offline-payment:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Record an offline payment on an open request (multipart payload JSON + optional proof)
+      parameters: [{ in: path, name: orderId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      requestBody: { required: true, content: { multipart/form-data: { schema: { type: object, required: [payload], properties: { payload: { type: string, description: 'JSON { method, reference, bankName, payerName, receivedAt, note }' }, proof: { type: string, format: binary } } } } } }
+      responses: { '200': { description: Paid order }, '409': { description: ORDER_NOT_PAYABLE_OFFLINE } }
+  /admin/payments/offline:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Register a desk payment for a student (order created and paid in one step)
+      requestBody: { required: true, content: { multipart/form-data: { schema: { type: object, required: [payload], properties: { payload: { type: string, description: 'JSON { target: { studentEmail, courseIds, examIds, plan }, payment }' }, proof: { type: string, format: binary } } } } } }
+      responses: { '201': { description: Paid order } }
+  /admin/payments/orders/{orderId}/cancel:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Cancel a pending offline request
+      parameters: [{ in: path, name: orderId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '200': { description: Order } }
+  /storage/providers:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Cloud storage providers and whether they are configured
+      responses: { '200': { description: Providers } }
+  /storage/accounts:
+    get:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Paired Google Drive / OneDrive accounts with quota (tokens never returned)
+      responses: { '200': { description: Accounts } }
+  /storage/accounts/connect:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Start OAuth pairing
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [provider], properties: { provider: { type: string, enum: [google_drive, onedrive] } } } } } }
+      responses: { '200': { description: '{ authorizationUrl }' }, '503': { description: STORAGE_PROVIDER_NOT_CONFIGURED } }
+  /storage/oauth/{provider}/callback:
+    get:
+      summary: OAuth redirect target (signed state); redirects to /storage?storage=connected|error
+      parameters: [{ in: path, name: provider, required: true, schema: { type: string, enum: [google_drive, onedrive] } }]
+      responses: { '303': { description: Redirect } }
+  /storage/accounts/{accountId}:
+    patch:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Make the account the default upload target
+      parameters: [{ in: path, name: accountId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '200': { description: Account } }
+    delete:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Unpair an account (refused while course files are stored on it)
+      parameters: [{ in: path, name: accountId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '204': { description: Unpaired }, '409': { description: STORAGE_ACCOUNT_IN_USE } }
+  /storage/accounts/{accountId}/refresh:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Refresh the quota from the provider
+      parameters: [{ in: path, name: accountId, required: true, schema: { $ref: '#/components/schemas/ObjectId' } }]
+      responses: { '200': { description: Account } }
+  /storage/exports/grades:
+    post:
+      security: [{ sessionCookie: [] }, { bearerAuth: [] }]
+      summary: Grade sheet of a managed course as CSV download or saved to a paired drive
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [courseId], properties: { courseId: { $ref: '#/components/schemas/ObjectId' }, destination: { type: string, description: 'download, default or an account id' } } } } } }
+      responses: { '200': { description: CSV file }, '201': { description: '{ fileName, webUrl, provider, accountEmail }' } }
+

@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    --font-arabic: 'Noto Sans Arabic', 'Plus Jakarta Sans', system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+
+  html[lang="ar"] {
+    font-family: var(--font-arabic);
+  }
+
+  html:not([lang="ar"]) {
+    font-family: var(--font-sans);
+  }
+
+  body {
+    overflow-x: hidden;
+  }
+}
+
+/* Logical RTL utilities & scrollbar styling */
+[dir="rtl"] .rtl-flip {
+  transform: scaleX(-1);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Lesson rich text (teacher content rendered by LessonBlocksView and the rich text editor). */
+@layer components {
+  .lesson-rich-text { font-size: 0.9rem; line-height: 1.7; overflow-wrap: anywhere; }
+  .lesson-rich-text > * + * { margin-top: 0.75em; }
+  .lesson-rich-text h2 { font-size: 1.25rem; font-weight: 700; margin-top: 1.25em; }
+  .lesson-rich-text h3 { font-size: 1.1rem; font-weight: 700; margin-top: 1em; }
+  .lesson-rich-text h4 { font-weight: 700; }
+  .lesson-rich-text ul { list-style: disc; padding-inline-start: 1.5rem; }
+  .lesson-rich-text ol { list-style: decimal; padding-inline-start: 1.5rem; }
+  .lesson-rich-text a { color: #4f46e5; text-decoration: underline; }
+  .lesson-rich-text blockquote { border-inline-start: 4px solid #c7d2fe; padding-inline-start: 0.75rem; color: #475569; }
+  .lesson-rich-text code { font-family: var(--font-mono); font-size: 0.85em; background: rgb(148 163 184 / 0.2); border-radius: 4px; padding: 0.1em 0.3em; }
+  .lesson-rich-text pre { background: #0f172a; color: #e2e8f0; border-radius: 8px; padding: 0.75rem; overflow-x: auto; }
+  .lesson-rich-text pre code { background: transparent; padding: 0; }
+  .lesson-rich-text table { border-collapse: collapse; width: 100%; display: block; overflow-x: auto; }
+  .lesson-rich-text th, .lesson-rich-text td { border: 1px solid #cbd5e1; padding: 0.35rem 0.6rem; text-align: start; }
+  .lesson-rich-text th { background: rgb(148 163 184 / 0.15); font-weight: 600; }
+}
+
+/* Calendar (FullCalendar): business states are shown by a style and a text label, never by colour alone. */
+@layer components {
+  .em-calendar .fc { --fc-border-color: #e2e8f0; --fc-today-bg-color: rgb(224 231 255 / 0.45); --fc-now-indicator-color: #e11d48; font-size: 0.8rem; }
+  .em-calendar .fc .fc-col-header-cell-cushion, .em-calendar .fc .fc-daygrid-day-number { color: #334155; }
+  .em-calendar .fc .fc-timegrid-slot-label-cushion, .em-calendar .fc .fc-list-day-text { color: #475569; }
+  .em-calendar .fc-event { cursor: pointer; }
+  .em-calendar .fc-event:focus-visible { outline: 3px solid #1e1b4b; outline-offset: 2px; }
+  .em-calendar .em-state-pending { border-style: dashed !important; border-width: 2px !important; }
+  .em-calendar .em-state-cancelled { text-decoration: line-through; opacity: 0.75; background-image: repeating-linear-gradient(45deg, transparent 0 6px, rgb(255 255 255 / 0.35) 6px 9px); }
+  .em-calendar .em-state-tentative { background-image: repeating-linear-gradient(135deg, transparent 0 8px, rgb(255 255 255 / 0.25) 8px 12px); }
+  .em-calendar .em-state-completed { border-style: double !important; border-width: 3px !important; border-color: rgb(255 255 255 / 0.7) !important; }
+  .em-calendar .em-saving { opacity: 0.55; }
+  /* Item reached from a link of another page (e.g. Tutoring → "See in calendar"). */
+  .em-highlight { outline: 3px solid #f59e0b !important; outline-offset: 2px; }
+}

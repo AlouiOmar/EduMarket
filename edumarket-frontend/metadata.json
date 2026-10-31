@@ -1,0 +1,6 @@
+{
+  "name": "EduMarket LMS - Plateforme de Formation en Ligne",
+  "description": "Plateforme LMS Marketplace multilingue pour étudiants, formateurs et institutions: cours en ligne, certifications, examens, tutorat et forum éducatif.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

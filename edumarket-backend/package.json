@@ -1,0 +1,38 @@
+{
+  "name": "edumarket-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc --noEmit -p tsconfig.json",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "test:integration": "node tests/require-mongo-uri.mjs && npm run build && node --test tests/mongo-workflows.test.mjs tests/mongo-marketplace.test.mjs tests/mongo-course-content.test.mjs tests/mongo-publication.test.mjs tests/mongo-gradebook.test.mjs tests/mongo-assessments.test.mjs tests/mongo-participation.test.mjs tests/mongo-templates.test.mjs tests/mongo-integrations.test.mjs tests/mongo-files.test.mjs tests/mongo-calendar.test.mjs tests/mongo-teacher-applications.test.mjs"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.9.5",
+    "multer": "^2.4.0",
+    "sanitize-html": "^2.17.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/multer": "^2.3.0",
+    "@types/node": "^22.14.0",
+    "@types/sanitize-html": "^2.16.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
